@@ -1,0 +1,26 @@
+{
+  "name": "grinfood-back1",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/OleksandrGrynov/Grinfood-back.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/OleksandrGrynov/Grinfood-back/issues"
+  },
+  "homepage": "https://github.com/OleksandrGrynov/Grinfood-back#readme",
+  "dependencies": {
+    "cors": "^2.8.5",
+    "dotenv": "^16.5.0",
+    "express": "^5.1.0",
+    "firebase-admin": "^13.3.0"
+  }
+}
