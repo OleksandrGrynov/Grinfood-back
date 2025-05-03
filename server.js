@@ -3,7 +3,7 @@ const cors = require('cors');
 require('dotenv').config();
 const admin = require('firebase-admin');
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
-const serviceAccount = require('./grinfood-c34ac-firebase-adminsdk-fbsvc-c64ec5162c.json');
+const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_JSON);
 const twilio = require('twilio');
 const client = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
 const router = express.Router();
