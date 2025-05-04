@@ -3,7 +3,7 @@ const cors = require('cors');
 require('dotenv').config();
 const admin = require('firebase-admin');
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
-const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_JSON);
+const serviceAccount = require('./grinfood-c34ac-firebase-adminsdk-fbsvc-c64ec5162c.json');
 const twilio = require('twilio');
 const client = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
 const router = express.Router();
@@ -688,7 +688,7 @@ app.post('/api/forgot-password', async (req, res) => {
 
     try {
         const resetLink = await admin.auth().generatePasswordResetLink(email, {
-            url: process.env.RESET_REDIRECT_URL || 'http://localhost:3000',
+            url: process.env.RESET_REDIRECT_URL || 'https://grinfood-c34ac.web.app/',
         });
 
         console.log('📨 Скидання пароля для:', email);
@@ -701,6 +701,24 @@ app.post('/api/forgot-password', async (req, res) => {
     }
 });
 
+
+
+// ✅ Публічна перевірка, чи існує акаунт з такою поштою
+app.post('/api/check-user-by-email', async (req, res) => {
+    const { email } = req.body;
+
+    if (!email) {
+        return res.status(400).json({ error: 'Пошта обов’язкова' });
+    }
+
+    try {
+        await admin.auth().getUserByEmail(email);
+        res.json({ exists: true });
+    } catch (err) {
+        console.error('❌ Email не знайдено:', email);
+        res.status(404).json({ error: 'Користувача не знайдено' });
+    }
+});
 
 
 
