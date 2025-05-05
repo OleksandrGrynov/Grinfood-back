@@ -780,7 +780,7 @@ app.post('/api/send-verification-email', async (req, res) => {
         return res.status(400).json({ error: 'Необхідно вказати email та uid' });
     }
 
-    const verificationLink = `${process.env.APP_BASE_URL}/verify-email?uid=${uid}`; // фронт сторінка
+    const verificationLink = `${process.env.REACT_APP_API_URL}/verify-email?uid=${uid}`;// фронт сторінка
 
     const msg = {
         to: email,
@@ -812,21 +812,22 @@ app.post('/api/send-verification-email', async (req, res) => {
 
 
 
-app.post('/api/verify-email', async (req, res) => {
-    const { uid } = req.body;
-    if (!uid) return res.status(400).json({ error: 'uid обов’язковий' });
+app.get('/api/verify-email', async (req, res) => {
+    const { uid } = req.query;
+    if (!uid) return res.redirect(`${process.env.APP_BASE_URL}/profile?verified=false`);
 
     try {
         await admin.auth().updateUser(uid, {
             emailVerified: true
         });
 
-        res.json({ success: true, message: 'Пошта підтверджена' });
+        return res.redirect(`${process.env.APP_BASE_URL}/profile?verified=true`);
     } catch (err) {
         console.error('❌ Email verify error:', err);
-        res.status(500).json({ error: 'Помилка підтвердження пошти' });
+        return res.redirect(`${process.env.APP_BASE_URL}/profile?verified=false`);
     }
 });
+
 
 
 
