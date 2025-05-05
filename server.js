@@ -780,38 +780,53 @@ app.post('/api/send-verification-email', async (req, res) => {
         return res.status(400).json({ error: 'Необхідно вказати email та uid' });
     }
 
-    const verificationLink = `${process.env.APP_BASE_URL}/profile?verified=true`;// фронт сторінка
-
-    const msg = {
-        to: email,
-        from: process.env.SENDGRID_FROM_EMAIL,
-        subject: '🔐 Підтвердження пошти GrinFood',
-        html: `
-            <p>Привіт!</p>
-            <p>Щоб підтвердити вашу нову пошту, натисніть кнопку нижче:</p>
-            <a href="${verificationLink}" style="background:#4CAF50;color:white;padding:10px 20px;border-radius:6px;text-decoration:none;">
-                Підтвердити пошту
-            </a>
-            <p>Якщо це були не ви — проігноруйте це повідомлення.</p>
-        `
-    };
-
     try {
-        console.log('📤 Надсилання верифікаційного листа через SendGrid:', msg);
+        const link = await admin.auth().generateEmailVerificationLink(email, {
+            url: `${process.env.APP_BASE_URL}/profile`, // Редірект ПІСЛЯ верифікації
+            handleCodeInApp: false // 🔐 ОБОВ'ЯЗКОВО false
+        });
+
+        const msg = {
+            to: email,
+            from: process.env.SENDGRID_FROM_EMAIL,
+            subject: '🔐 Підтвердження пошти GrinFood',
+            html: `
+                <p>Привіт!</p>
+                <p>Щоб підтвердити вашу пошту, натисніть кнопку нижче:</p>
+                <a href="${link}" style="background:#4CAF50;color:white;padding:10px 20px;border-radius:6px;text-decoration:none;">
+                    Підтвердити пошту
+                </a>
+                <p>Якщо це були не ви — проігноруйте це повідомлення.</p>
+            `
+        };
+
+        console.log('📤 Надсилання листа:', msg);
 
         await sgMail.send(msg);
-
-        console.log(`📨 Verification email sent to ${email}`);
         res.json({ success: true });
+
     } catch (error) {
-        console.error('❌ SendGrid error (FULL):', error);
+        console.error('❌ Error sending verification email:', error);
         res.status(500).json({ error: 'Не вдалося надіслати лист' });
     }
-
 });
 
 
 
+
+// Перевірити статус підтвердження email
+app.get('/api/check-email-verified/:uid', async (req, res) => {
+    try {
+        const user = await admin.auth().getUser(req.params.uid);
+        res.json({
+            email: user.email,
+            emailVerified: user.emailVerified
+        });
+    } catch (error) {
+        console.error('❌ Email verify check error:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
 
 // ✅ Запуск сервера
 app.listen(PORT, () => {
