@@ -797,13 +797,17 @@ app.post('/api/send-verification-email', async (req, res) => {
     };
 
     try {
+        console.log('📤 Надсилання верифікаційного листа через SendGrid:', msg);
+
         await sgMail.send(msg);
+
         console.log(`📨 Verification email sent to ${email}`);
         res.json({ success: true });
     } catch (error) {
-        console.error('❌ SendGrid error:', error.message);
+        console.error('❌ SendGrid error (FULL):', error);
         res.status(500).json({ error: 'Не вдалося надіслати лист' });
     }
+
 });
 
 
