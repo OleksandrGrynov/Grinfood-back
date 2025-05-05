@@ -741,6 +741,90 @@ app.post('/api/check-user-by-email', async (req, res) => {
 
 
 
+// 📧 Надіслати email при оновленні профілю
+app.post('/api/notify-profile-updated', async (req, res) => {
+    const { email, name } = req.body;
+
+    if (!email || !name) {
+        return res.status(400).json({ error: 'Потрібно вказати email та ім’я' });
+    }
+
+    const msg = {
+        to: email,
+        from: process.env.SENDGRID_FROM_EMAIL, // приклад: grinfood.support@gmail.com
+        subject: '✅ Ваш профіль GrinFood оновлено',
+        html: `
+            <p>Привіт, <strong>${name}</strong>!</p>
+            <p>Ваш профіль був успішно оновлений.</p>
+            <p>Якщо це були не ви — терміново змініть пароль.</p>
+            <br />
+            <small>З повагою, команда GrinFood</small>
+        `
+    };
+
+    try {
+        await sgMail.send(msg);
+        console.log(`📤 Профіль-нотифікація надіслана: ${email}`);
+        res.json({ success: true });
+    } catch (error) {
+        console.error('❌ SendGrid notify error:', error.message);
+        res.status(500).json({ error: 'Не вдалося надіслати повідомлення' });
+    }
+});
+
+
+app.post('/api/send-verification-email', async (req, res) => {
+    const { email, uid } = req.body;
+
+    if (!email || !uid) {
+        return res.status(400).json({ error: 'Необхідно вказати email та uid' });
+    }
+
+    const verificationLink = `${process.env.APP_BASE_URL}/verify-email?uid=${uid}`; // фронт сторінка
+
+    const msg = {
+        to: email,
+        from: process.env.SENDGRID_FROM_EMAIL,
+        subject: '🔐 Підтвердження пошти GrinFood',
+        html: `
+            <p>Привіт!</p>
+            <p>Щоб підтвердити вашу нову пошту, натисніть кнопку нижче:</p>
+            <a href="${verificationLink}" style="background:#4CAF50;color:white;padding:10px 20px;border-radius:6px;text-decoration:none;">
+                Підтвердити пошту
+            </a>
+            <p>Якщо це були не ви — проігноруйте це повідомлення.</p>
+        `
+    };
+
+    try {
+        await sgMail.send(msg);
+        console.log(`📨 Verification email sent to ${email}`);
+        res.json({ success: true });
+    } catch (error) {
+        console.error('❌ SendGrid error:', error.message);
+        res.status(500).json({ error: 'Не вдалося надіслати лист' });
+    }
+});
+
+
+
+app.post('/api/verify-email', async (req, res) => {
+    const { uid } = req.body;
+    if (!uid) return res.status(400).json({ error: 'uid обов’язковий' });
+
+    try {
+        await admin.auth().updateUser(uid, {
+            emailVerified: true
+        });
+
+        res.json({ success: true, message: 'Пошта підтверджена' });
+    } catch (err) {
+        console.error('❌ Email verify error:', err);
+        res.status(500).json({ error: 'Помилка підтвердження пошти' });
+    }
+});
+
+
 
 // ✅ Запуск сервера
 app.listen(PORT, () => {
