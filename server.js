@@ -780,7 +780,7 @@ app.post('/api/send-verification-email', async (req, res) => {
         return res.status(400).json({ error: 'Необхідно вказати email та uid' });
     }
 
-    const verificationLink = `${process.env.APP_BASE_URL}/verify-email?uid=${uid}&verified=true`;// фронт сторінка
+    const verificationLink = `${process.env.APP_BASE_URL}/profile?verified=true`;// фронт сторінка
 
     const msg = {
         to: email,
@@ -808,24 +808,6 @@ app.post('/api/send-verification-email', async (req, res) => {
         res.status(500).json({ error: 'Не вдалося надіслати лист' });
     }
 
-});
-
-
-
-app.get('/api/verify-email', async (req, res) => {
-    const { uid } = req.query;
-    if (!uid) return res.redirect(`${process.env.APP_BASE_URL}/profile?verified=false`);
-
-    try {
-        await admin.auth().updateUser(uid, {
-            emailVerified: true
-        });
-
-        return res.redirect(`${process.env.APP_BASE_URL}/profile?verified=true`);
-    } catch (err) {
-        console.error('❌ Email verify error:', err);
-        return res.redirect(`${process.env.APP_BASE_URL}/profile?verified=false`);
-    }
 });
 
 
