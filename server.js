@@ -780,7 +780,7 @@ app.post('/api/send-verification-email', async (req, res) => {
         return res.status(400).json({ error: 'Необхідно вказати email та uid' });
     }
 
-    const verificationLink = `${process.env.REACT_APP_API_URL}/verify-email?uid=${uid}`;// фронт сторінка
+    const verificationLink = `${process.env.APP_BASE_URL}/verify-email?uid=${uid}`;// фронт сторінка
 
     const msg = {
         to: email,
