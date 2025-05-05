@@ -3,7 +3,8 @@ const cors = require('cors');
 require('dotenv').config();
 const admin = require('firebase-admin');
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
-const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_JSON);
+const serviceAccount = require('./grinfood-c34ac-firebase-adminsdk-fbsvc-c64ec5162c.json');
+
 
 const twilio = require('twilio');
 const client = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
@@ -18,7 +19,8 @@ app.use(express.json());
 
 // 🔐 Firebase init
 admin.initializeApp({
-    credential: admin.credential.cert(JSON.parse(process.env.FIREBASE_SERVICE_JSON))
+    credential: admin.credential.cert(serviceAccount)
+
 });
 
 const db = admin.firestore();
@@ -692,7 +694,7 @@ app.post('/api/forgot-password', async (req, res) => {
         const resetLink = await admin.auth().generatePasswordResetLink(email, {
             url: process.env.RESET_REDIRECT_URL || 'https://grinfood-c34ac.web.app/',
         });
-
+        console.log('📨 Generated link:', resetLink);
         console.log('📨 Скидання пароля для:', email);
         // Firebase автоматично надішле лист із цим лінком
 
