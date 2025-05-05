@@ -11,6 +11,8 @@ const router = express.Router();
 const { OpenAI } = require('openai');
 const app = express();
 const PORT = process.env.PORT || 5000;
+const sgMail = require('@sendgrid/mail');
+sgMail.setApiKey(process.env.SENDGRID_API_KEY);
 
 // 🧩 Middleware
 app.use(cors());
@@ -689,18 +691,34 @@ app.post('/api/forgot-password', async (req, res) => {
 
     try {
         const resetLink = await admin.auth().generatePasswordResetLink(email, {
-            url: process.env.RESET_REDIRECT_URL || 'https://grinfood-c34ac.web.app/',
+            url: process.env.RESET_REDIRECT_URL || 'https://grinfood-c34ac.web.app/reset-password',
         });
-        console.log('📨 Generated link:', resetLink);
-        console.log('📨 Скидання пароля для:', email);
-        // Firebase автоматично надішле лист із цим лінком
 
-        res.status(200).json({ message: 'Посилання для скидання надіслано на пошту' });
+        const msg = {
+            to: email,
+            from: process.env.SENDGRID_FROM_EMAIL, // приклад: grinfood.support@gmail.com
+            subject: '🔐 Скидання пароля до GrinFood',
+            html: `
+                <p>Вітаємо!</p>
+                <p>Щоб скинути пароль, натисніть кнопку нижче:</p>
+                <a href="${resetLink}" style="background:#4CAF50;color:white;padding:10px 20px;border-radius:6px;text-decoration:none;">
+                    Скинути пароль
+                </a>
+                <p>Якщо ви не запитували скидання — просто ігноруйте цей лист.</p>
+                <br />
+                <small>GrinFood Team</small>
+            `,
+        };
+
+        await sgMail.send(msg);
+        console.log(`📤 Email sent to ${email}`);
+        res.status(200).json({ message: '📩 Лист зі скиданням пароля надіслано' });
     } catch (error) {
-        console.error('❌ Помилка при скиданні пароля:', error.message);
-        res.status(500).json({ error: 'Не вдалося скинути пароль' });
+        console.error('❌ SendGrid Error:', error.message);
+        res.status(500).json({ error: 'Не вдалося надіслати лист' });
     }
 });
+
 
 
 
