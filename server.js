@@ -917,7 +917,7 @@ app.post('/api/check-user-by-email', (req, res) => emailController.checkUserByEm
 app.get('/api/user/:uid', (req, res) => emailController.getUserName(req, res));
 app.get('/api/stats/revenue', (req, res) => statsController.getRevenueInPeriod(req, res));
 app.get('/api/stats/demand', (req, res) => statsController.getProductDemandInPeriod(req, res));
-app.get('/api/stats/daily-revenue', (req, res) => statsController.getDailyRevenue(req, res));
+app.get('/api/stats/revenue-daily', (req, res) => statsController.getDailyRevenue(req, res));
 
 
 
