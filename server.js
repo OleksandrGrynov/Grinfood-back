@@ -45,19 +45,35 @@ class BaseController {
 
     async checkToken(req, res) {
         const token = req.headers.authorization?.split(' ')[1];
-        if (!token) return res.status(403).json({ error: 'Немає токену' });
+        if (!token) {
+            res.status(403).json({ error: 'Немає токену' });
+            return null;
+        }
+
         try {
             const decoded = await this.auth.verifyIdToken(token);
+            if (!decoded?.uid) {
+                res.status(403).json({ error: 'UID не знайдено в токені' });
+                return null;
+            }
             return decoded.uid;
         } catch (e) {
-            return res.status(403).json({ error: 'Невірний токен' });
+            console.error('❌ Token verification error:', e.message);
+            res.status(403).json({ error: 'Невірний токен' });
+            return null;
         }
     }
 
+
     async getUserRole(uid) {
+        if (!uid) {
+            throw new Error('❌ UID не передано в getUserRole');
+        }
+
         const roleDoc = await this.db.collection('roles').doc(uid).get();
         return roleDoc.exists ? roleDoc.data().role : 'user';
     }
+
 }
 
 class StatsController extends BaseController {
