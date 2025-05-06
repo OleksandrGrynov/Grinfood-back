@@ -388,13 +388,22 @@ class OrderController extends BaseController {
                 .where('courierId', '==', uid)
                 .get();
 
-            const orders = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+            const orders = snapshot.docs.map(doc => {
+                const data = doc.data();
+                return {
+                    id: doc.id,
+                    ...data,
+                    createdAt: data.createdAt?.toDate ? data.createdAt.toDate() : null
+                };
+            });
+
             res.json(orders);
         } catch (err) {
             console.error('❌ Fetch courier orders error:', err);
             res.status(500).json({ error: 'Не вдалося отримати ваші замовлення' });
         }
     }
+
 // ✅ Завершити доставку
     async markOrderAsDelivered(req, res) {
         const uid = await this.checkToken(req, res);
