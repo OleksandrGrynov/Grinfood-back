@@ -103,6 +103,53 @@ class StatsController extends BaseController {
             res.status(500).json({ error: 'Не вдалося отримати статистику' });
         }
     }
+    async getDailyRevenue(req, res) {
+        const uid = await this.checkToken(req, res);
+        if (!uid) return;
+
+        const role = await this.getUserRole(uid);
+        if (role !== 'manager') return res.status(403).json({ error: 'Недостатньо прав' });
+
+        const { startDate, endDate } = req.query;
+
+        if (!startDate || !endDate) {
+            return res.status(400).json({ error: 'Потрібні startDate та endDate' });
+        }
+
+        try {
+            const start = admin.firestore.Timestamp.fromDate(new Date(`${startDate}T00:00:00Z`));
+            const end = admin.firestore.Timestamp.fromDate(new Date(`${endDate}T23:59:59Z`));
+
+            const snapshot = await this.db.collection('orders')
+                .where('createdAt', '>=', start)
+                .where('createdAt', '<=', end)
+                .where('status', '==', 'confirmed')
+                .get();
+
+            const revenueByDate = {};
+
+            snapshot.forEach(doc => {
+                const data = doc.data();
+                const dateKey = data.createdAt.toDate().toISOString().slice(0, 10); // YYYY-MM-DD
+                revenueByDate[dateKey] = (revenueByDate[dateKey] || 0) + (data.total || 0);
+            });
+
+            // Заповнити дати без продажів
+            const result = [];
+            let current = new Date(startDate);
+            const last = new Date(endDate);
+            while (current <= last) {
+                const key = current.toISOString().slice(0, 10);
+                result.push({ date: key, revenue: revenueByDate[key] || 0 });
+                current.setDate(current.getDate() + 1);
+            }
+
+            res.json(result);
+        } catch (err) {
+            console.error('❌ Daily revenue error:', err);
+            res.status(500).json({ error: 'Помилка отримання виручки по днях' });
+        }
+    }
 
     async getRevenueInPeriod(req, res) {
         const uid = await this.checkToken(req, res);
@@ -870,6 +917,7 @@ app.post('/api/check-user-by-email', (req, res) => emailController.checkUserByEm
 app.get('/api/user/:uid', (req, res) => emailController.getUserName(req, res));
 app.get('/api/stats/revenue', (req, res) => statsController.getRevenueInPeriod(req, res));
 app.get('/api/stats/demand', (req, res) => statsController.getProductDemandInPeriod(req, res));
+app.get('/api/stats/daily-revenue', (req, res) => statsController.getDailyRevenue(req, res));
 
 
 
