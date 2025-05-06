@@ -1,80 +1,86 @@
+// ✅ OOP-реалізація всього сервера в одному файлі
+
 const express = require('express');
 const cors = require('cors');
 require('dotenv').config();
 const admin = require('firebase-admin');
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
-const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_JSON);
 const twilio = require('twilio');
-const client = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
-const router = express.Router();
+const sgMail = require('@sendgrid/mail');
+const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_JSON);
+
 const app = express();
 const PORT = process.env.PORT || 5000;
-const sgMail = require('@sendgrid/mail');
-sgMail.setApiKey(process.env.SENDGRID_API_KEY);
 
 // 🔐 Firebase init
-admin.initializeApp({
-    credential: admin.credential.cert(serviceAccount)
-});
+admin.initializeApp({ credential: admin.credential.cert(serviceAccount) });
 
-// 🧩 Middleware
+const client = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
+sgMail.setApiKey(process.env.SENDGRID_API_KEY);
+
 app.use(cors());
 app.use(express.json());
 
-// 📦 FirebaseService (ООП)
+// 📦 FirebaseService
 class FirebaseService {
     constructor(adminInstance) {
         this.db = adminInstance.firestore();
         this.auth = adminInstance.auth();
     }
-
     getDb() {
         return this.db;
     }
-
     getAuth() {
         return this.auth;
     }
 }
 
-// 📊 StatsController (ООП)
-class StatsController {
+// 🧠 Controllers
+
+class BaseController {
     constructor(firebaseService) {
         this.db = firebaseService.getDb();
         this.auth = firebaseService.getAuth();
     }
 
-    async getPopularProducts(req, res) {
+    async checkToken(req, res) {
         const token = req.headers.authorization?.split(' ')[1];
         if (!token) return res.status(403).json({ error: 'Немає токену' });
-
         try {
             const decoded = await this.auth.verifyIdToken(token);
-            const uid = decoded.uid;
+            return decoded.uid;
+        } catch (e) {
+            return res.status(403).json({ error: 'Невірний токен' });
+        }
+    }
 
-            const roleDoc = await this.db.collection('roles').doc(uid).get();
-            if (!roleDoc.exists || roleDoc.data().role !== 'manager') {
-                return res.status(403).json({ error: 'Недостатньо прав' });
-            }
+    async getUserRole(uid) {
+        const roleDoc = await this.db.collection('roles').doc(uid).get();
+        return roleDoc.exists ? roleDoc.data().role : 'user';
+    }
+}
 
+class StatsController extends BaseController {
+    async getPopularProducts(req, res) {
+        const uid = await this.checkToken(req, res);
+        if (!uid) return;
+
+        const role = await this.getUserRole(uid);
+        if (role !== 'manager') return res.status(403).json({ error: 'Недостатньо прав' });
+
+        try {
             const snapshot = await this.db.collection('orders').get();
-
             const productCount = {};
             snapshot.forEach(doc => {
                 const items = doc.data().items || [];
                 items.forEach(item => {
                     const name = item.name;
-                    if (!productCount[name]) {
-                        productCount[name] = 0;
-                    }
-                    productCount[name] += item.quantity || 1;
+                    productCount[name] = (productCount[name] || 0) + (item.quantity || 1);
                 });
             });
-
             const result = Object.entries(productCount)
                 .map(([name, count]) => ({ name, count }))
                 .sort((a, b) => b.count - a.count);
-
             res.json(result);
         } catch (err) {
             console.error('❌ Error fetching stats:', err);
@@ -83,542 +89,367 @@ class StatsController {
     }
 }
 
-const firebaseService = new FirebaseService(admin);
-const statsController = new StatsController(firebaseService);
-const db = firebaseService.getDb(); // 🛠 обов’язково!
-
-// 👇 Mounting route
-app.get('/api/stats/popular-products', (req, res) => statsController.getPopularProducts(req, res));
-
-
-// 🏠 Головна
-app.get('/', (req, res) => {
-    res.send('Grinfood API is working ✅');
-});
-
-// 🍔 Отримати всі позиції меню
-app.get('/api/menu', async (req, res) => {
-    try {
-        const snapshot = await db.collection('menuItems').get();
-
-
-        const items = snapshot.docs.map(doc => ({
-            id: doc.id,
-            ...doc.data()
-        }));
-        res.json(items);
-    } catch (error) {
-        console.error('❌ Error fetching menu:', error);
-        res.status(500).json({ error: 'Failed to fetch menu' });
-    }
-});
-
-// ➕ Додати позицію меню
-app.post('/api/menu', async (req, res) => {
-    try {
-        const { name, price, image, category, description } = req.body;
-
-        if (!name || !price || !image || !category) {
-            return res.status(400).json({ error: 'All fields are required' });
+class MenuController extends BaseController {
+    async getMenuItems(req, res) {
+        try {
+            const snapshot = await this.db.collection('menuItems').get();
+            const items = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+            res.json(items);
+        } catch (err) {
+            console.error('❌ Error fetching menu:', err);
+            res.status(500).json({ error: 'Failed to fetch menu' });
         }
-
-        const docRef = await db.collection('menuItems').add({
-            name,
-            price,
-            image,
-            category,
-            description: description || '' // Додаємо опис
-        });
-
-        res.status(201).json({ id: docRef.id, name, price, image, category, description });
-    } catch (error) {
-        console.error('❌ Error adding item:', error);
-        res.status(500).json({ error: 'Failed to add item' });
-    }
-});
-
-
-
-app.post('/api/orders', async (req, res) => {
-    const token = req.headers.authorization?.split(' ')[1];
-
-    if (!token) {
-        return res.status(403).json({ error: 'Невірний токен авторизації' });
     }
 
-    try {
-        const decodedToken = await admin.auth().verifyIdToken(token);
-        const userId = decodedToken.uid;
+    async addMenuItem(req, res) {
+        try {
+            const { name, price, image, category, description } = req.body;
+            if (!name || !price || !image || !category) {
+                return res.status(400).json({ error: 'All fields are required' });
+            }
+            const docRef = await this.db.collection('menuItems').add({
+                name,
+                price,
+                image,
+                category,
+                description: description || ''
+            });
+            res.status(201).json({ id: docRef.id, name, price, image, category, description });
+        } catch (err) {
+            console.error('❌ Error adding item:', err);
+            res.status(500).json({ error: 'Failed to add item' });
+        }
+    }
+
+    async updateMenuItem(req, res) {
+        const token = req.headers.authorization?.split(' ')[1];
+        if (!token) return res.status(403).json({ error: 'Немає токену' });
+        try {
+            const { id } = req.params;
+            const { name, price, image, category, description } = req.body;
+            await this.db.collection('menuItems').doc(id).update({
+                name,
+                price,
+                image,
+                category,
+                description: description || ''
+            });
+            res.json({ message: 'Оновлено' });
+        } catch (err) {
+            console.error('❌ Menu update error:', err);
+            res.status(500).json({ error: 'Помилка оновлення' });
+        }
+    }
+
+    async deleteMenuItem(req, res) {
+        const token = req.headers.authorization?.split(' ')[1];
+        if (!token) return res.status(403).json({ error: 'Немає токену' });
+        try {
+            const { id } = req.params;
+            await this.db.collection('menuItems').doc(id).delete();
+            res.json({ message: 'Видалено' });
+        } catch (err) {
+            console.error('❌ Menu delete error:', err);
+            res.status(500).json({ error: 'Помилка видалення' });
+        }
+    }
+}
+
+
+
+
+class OrderController extends BaseController {
+    async createOrder(req, res) {
+        const uid = await this.checkToken(req, res);
+        if (!uid) return;
 
         const { items, total, customer, address, paymentMethod } = req.body;
-
         if (!items || !total || !customer || !address || !paymentMethod) {
             return res.status(400).json({ error: 'Missing order data' });
         }
 
-        const order = {
-            items,
-            total,
-            customer,
-            address,
-            paymentMethod,
-            userId,
-            createdAt: admin.firestore.Timestamp.now(),
-
-            status: 'pending',
-        };
-
-        const docRef = await db.collection('orders').add(order);
-        res.status(201).json({ id: docRef.id, ...order });
-    } catch (error) {
-        console.error('❌ Error creating order:', error.message);
-        res.status(500).json({ error: error.message || 'Failed to create order' });
-    }
-});
-
-
-// 💳 Створити платежний намір через Stripe
-app.post('/api/create-payment-intent', async (req, res) => {
-    const token = req.headers.authorization?.split(' ')[1];
-
-    if (!token) {
-        return res.status(403).json({ error: 'Невірний токен авторизації' });
+        try {
+            const order = {
+                items,
+                total,
+                customer,
+                address,
+                paymentMethod,
+                userId: uid,
+                createdAt: admin.firestore.Timestamp.now(),
+                status: 'pending',
+            };
+            const docRef = await this.db.collection('orders').add(order);
+            res.status(201).json({ id: docRef.id, ...order });
+        } catch (error) {
+            console.error('❌ Error creating order:', error.message);
+            res.status(500).json({ error: error.message || 'Failed to create order' });
+        }
     }
 
-    try {
-        await admin.auth().verifyIdToken(token);
-        const { amount } = req.body;
+    async getOrdersByStatus(req, res) {
+        const uid = await this.checkToken(req, res);
+        if (!uid) return;
 
-        const paymentIntent = await stripe.paymentIntents.create({
-            amount,
-            currency: 'uah',
-            payment_method_types: ['card'],
-        });
+        const role = await this.getUserRole(uid);
+        if (role !== 'manager') return res.status(403).json({ error: 'Недостатньо прав' });
 
-        res.send({ clientSecret: paymentIntent.client_secret });
-    } catch (error) {
-        console.error('❌ Error creating payment intent:', error.message);
-        res.status(500).json({ error: error.message || 'Failed to create payment intent' });
-    }
-});
+        const { status } = req.params;
 
-// ✅ Реєстрація користувача
-app.post('/api/signup', async (req, res) => {
-    const { name, email, password, role = 'user' } = req.body;
-
-    if (!name || !email || !password) {
-        return res.status(400).json({ error: 'Потрібно вказати ім’я, email і пароль' });
+        try {
+            const snapshot = await this.db.collection('orders').where('status', '==', status).get();
+            let orders = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+            orders.sort((a, b) => (b.createdAt?.toMillis?.() || 0) - (a.createdAt?.toMillis?.() || 0));
+            res.json(orders);
+        } catch (err) {
+            console.error('❌ Order fetch error:', err);
+            res.status(500).json({ error: 'Помилка отримання замовлень' });
+        }
     }
 
-    try {
-        // Створення користувача
-        const userRecord = await admin.auth().createUser({
-            email,
-            password,
-            displayName: name
-        });
+    async updateOrderStatus(req, res) {
+        const uid = await this.checkToken(req, res);
+        if (!uid) return;
 
-        console.log("🟢 Користувач створений:", userRecord.uid);
+        const role = await this.getUserRole(uid);
+        if (role !== 'manager') return res.status(403).json({ error: 'Недостатньо прав' });
 
-        // Запис ролі у Firestore
-        const roleRef = db.collection('roles').doc(userRecord.uid);
-        await roleRef.set({ role });
-
-        const writtenRole = await roleRef.get();
-        if (!writtenRole.exists) {
-            throw new Error("❗Роль не збереглась у Firestore");
+        const { id } = req.params;
+        const { status } = req.body;
+        if (!['confirmed', 'cancelled'].includes(status)) {
+            return res.status(400).json({ error: 'Недійсний статус' });
         }
 
-        console.log("📄 Роль збережена:", writtenRole.data());
-
-        // Генерація токена
-        const token = await admin.auth().createCustomToken(userRecord.uid);
-
-        return res.status(201).json({
-            message: 'User created successfully',
-            user: userRecord,
-            token: token
-        });
-    } catch (error) {
-        console.error('❌ Помилка під час реєстрації користувача:', error);
-        return res.status(500).json({ error: error.message || 'Failed to register user' });
+        try {
+            await this.db.collection('orders').doc(id).update({ status });
+            res.json({ message: `Статус замовлення оновлено до \"${status}\"` });
+        } catch (err) {
+            console.error('❌ Update order error:', err);
+            res.status(500).json({ error: 'Помилка оновлення замовлення' });
+        }
     }
-});
+}
 
 
 
-// Вхід користувача
-app.post('/api/signin', async (req, res) => {
-    const { email, password } = req.body;
 
-    try {
-        const userRecord = await admin.auth().getUserByEmail(email);
-        const token = await admin.auth().createCustomToken(userRecord.uid);
 
-        res.status(200).json({ message: 'User signed in successfully', token });
-    } catch (error) {
-        console.error('❌ Error signing in user:', error);
-        res.status(400).json({ error: 'Failed to sign in user' });
-    }
-});
 
-// Перевірка користувача
-app.get('/api/check-auth', async (req, res) => {
-    const token = req.headers.authorization?.split(' ')[1];
 
-    if (!token) {
-        return res.status(403).json({ error: 'No token provided' });
+class AuthController extends BaseController {
+    async signup(req, res) {
+        const { name, email, password, role = 'user' } = req.body;
+        if (!name || !email || !password) {
+            return res.status(400).json({ error: 'Потрібно вказати ім’я, email і пароль' });
+        }
+
+        try {
+            const userRecord = await this.auth.createUser({ email, password, displayName: name });
+            await this.db.collection('roles').doc(userRecord.uid).set({ role });
+
+            const token = await this.auth.createCustomToken(userRecord.uid);
+            res.status(201).json({ message: 'User created successfully', user: userRecord, token });
+        } catch (error) {
+            console.error('❌ Signup error:', error);
+            res.status(500).json({ error: error.message });
+        }
     }
 
-    try {
-        const decodedToken = await admin.auth().verifyIdToken(token);
-        const uid = decodedToken.uid;
+    async signin(req, res) {
+        const { email } = req.body;
+        if (!email) return res.status(400).json({ error: 'Email обов’язковий' });
 
+        try {
+            const userRecord = await this.auth.getUserByEmail(email);
+            const token = await this.auth.createCustomToken(userRecord.uid);
+            res.status(200).json({ message: 'User signed in successfully', token });
+        } catch (error) {
+            console.error('❌ Signin error:', error);
+            res.status(400).json({ error: 'Failed to sign in user' });
+        }
+    }
+
+    async checkAuth(req, res) {
+        const uid = await this.checkToken(req, res);
+        if (!uid) return;
         res.status(200).json({ message: 'User is authorized', uid });
-    } catch (error) {
-        console.error('❌ Error verifying token:', error);
-        res.status(403).json({ error: 'Invalid token' });
-    }
-});
-
-// 🔥 Оновлення email користувача через бекенд
-app.post('/api/update-email', async (req, res) => {
-    const token = req.headers.authorization?.split(' ')[1];
-
-    if (!token) {
-        return res.status(403).json({ error: 'Немає токену авторизації' });
     }
 
-    const { newEmail } = req.body;
+    async getRole(req, res) {
+        const uid = await this.checkToken(req, res);
+        if (!uid) return;
 
-    if (!newEmail) {
-        return res.status(400).json({ error: 'Не вказана нова пошта' });
-    }
-
-    try {
-        const decodedToken = await admin.auth().verifyIdToken(token);
-        const uid = decodedToken.uid;
-
-        await admin.auth().updateUser(uid, {
-            email: newEmail
-        });
-        console.log(`📧 Updating user ${uid} email to ${newEmail}`);
-
-        return res.status(200).json({ message: 'Пошта оновлена успішно' });
-    } catch (error) {
-        console.error('❌ Error updating email:', error);
-        return res.status(500).json({ error: error.message || 'Помилка оновлення email' });
-    }
-});
-
-// 🆕 Отримати роль користувача
-app.get('/api/get-role', async (req, res) => {
-    const token = req.headers.authorization?.split(' ')[1];
-    if (!token) return res.status(403).json({ error: 'No token provided' });
-
-    try {
-        const decodedToken = await admin.auth().verifyIdToken(token);
-        const uid = decodedToken.uid;
-
-        console.log(`📝 Отримання ролі для користувача ${uid}`);
-
-        const roleDoc = await db.collection('roles').doc(uid).get();
-
-        if (!roleDoc.exists) {
-            return res.json({ role: 'user' });
+        try {
+            const role = await this.getUserRole(uid);
+            res.json({ role });
+        } catch (error) {
+            console.error('❌ Get role error:', error);
+            res.status(500).json({ error: 'Failed to get role' });
         }
-
-        return res.json({ role: roleDoc.data().role || 'user' });
-    } catch (error) {
-        console.error('❌ Error getting role:', error);
-        return res.status(500).json({ error: 'Failed to get role' });
     }
-});
 
-// 🧾 Отримати замовлення за статусом (pending / confirmed)
-app.get('/api/orders/by-status/:status', async (req, res) => {
-    const token = req.headers.authorization?.split(' ')[1];
-    const { status } = req.params;
+    async updateEmail(req, res) {
+        const uid = await this.checkToken(req, res);
+        if (!uid) return;
 
-    if (!token) return res.status(403).json({ error: 'Немає токену' });
+        const { newEmail } = req.body;
+        if (!newEmail) return res.status(400).json({ error: 'Не вказана нова пошта' });
 
-    try {
-        const decoded = await admin.auth().verifyIdToken(token);
-        const uid = decoded.uid;
-
-        const roleDoc = await db.collection('roles').doc(uid).get();
-        if (!roleDoc.exists || roleDoc.data().role !== 'manager') {
-            return res.status(403).json({ error: 'Недостатньо прав' });
+        try {
+            await this.auth.updateUser(uid, { email: newEmail });
+            res.status(200).json({ message: 'Пошта оновлена успішно' });
+        } catch (error) {
+            console.error('❌ Update email error:', error);
+            res.status(500).json({ error: error.message });
         }
-
-        const snapshot = await db.collection('orders')
-            .where('status', '==', status)
-            .get();
-
-        let orders = snapshot.docs.map(doc => ({
-            id: doc.id,
-            ...doc.data()
-        }));
-
-        // 🕐 Ручне сортування за createdAt ↓
-        orders = orders.sort((a, b) => {
-            const aTime = a.createdAt?.toMillis?.() || 0;
-            const bTime = b.createdAt?.toMillis?.() || 0;
-            return bTime - aTime;
-        });
-
-        res.json(orders);
-    } catch (err) {
-        console.error('❌ Order fetch error:', err);
-        res.status(500).json({ error: 'Помилка отримання замовлень' });
-    }
-});
-
-
-
-// 🔄 Оновити статус замовлення (тільки для менеджера)
-app.patch('/api/orders/:id/status', async (req, res) => {
-    const token = req.headers.authorization?.split(' ')[1];
-    const { id } = req.params;
-    const { status } = req.body;
-
-    if (!token) return res.status(403).json({ error: 'Немає токену' });
-    if (!['confirmed', 'cancelled'].includes(status)) {
-        return res.status(400).json({ error: 'Недійсний статус' });
     }
 
-    try {
-        const decoded = await admin.auth().verifyIdToken(token);
-        const uid = decoded.uid;
+    async deleteUser(req, res) {
+        const uid = await this.checkToken(req, res);
+        if (!uid) return;
 
-        const roleDoc = await db.collection('roles').doc(uid).get();
-        if (!roleDoc.exists || roleDoc.data().role !== 'manager') {
-            return res.status(403).json({ error: 'Недостатньо прав' });
+        try {
+            await this.auth.deleteUser(uid);
+            await this.db.collection('roles').doc(uid).delete().catch(() => {});
+            await this.db.collection('orders').where('userId', '==', uid).get().then(snapshot => {
+                snapshot.forEach(doc => doc.ref.delete());
+            });
+            await this.db.collection('reviews').where('userId', '==', uid).get().then(snapshot => {
+                snapshot.forEach(doc => doc.ref.delete());
+            });
+
+            res.json({ message: 'Користувача повністю видалено' });
+        } catch (error) {
+            console.error('❌ Delete user error:', error);
+            res.status(500).json({ error: error.message });
         }
-
-        await db.collection('orders').doc(id).update({ status });
-
-        res.json({ message: `Статус замовлення оновлено до "${status}"` });
-    } catch (err) {
-        console.error('❌ Update order error:', err);
-        res.status(500).json({ error: 'Помилка оновлення замовлення' });
     }
-});
+}
 
 
 
 
-// 📝 Оновити пункт меню
-app.put('/api/menu/:id', async (req, res) => {
-    const token = req.headers.authorization?.split(' ')[1];
-    if (!token) return res.status(403).json({ error: 'Немає токену' });
+class PromotionController extends BaseController {
+    async createPromotion(req, res) {
+        const uid = await this.checkToken(req, res);
+        if (!uid) return;
 
-    try {
-        const { id } = req.params;
-        const { name, price, image, category, description } = req.body;
-
-        await db.collection('menuItems').doc(id).update({
-            name,
-            price,
-            image,
-            category,
-            description: description || ''
-        });
-        res.json({ message: 'Оновлено' });
-    } catch (err) {
-        console.error('❌ Menu update error:', err);
-        res.status(500).json({ error: 'Помилка оновлення' });
-    }
-});
-
-
-
-// ❌ Видалити пункт меню
-app.delete('/api/menu/:id', async (req, res) => {
-    const token = req.headers.authorization?.split(' ')[1];
-    if (!token) return res.status(403).json({ error: 'Немає токену' });
-
-    try {
-        const { id } = req.params;
-        await db.collection('menuItems').doc(id).delete();
-        res.json({ message: 'Видалено' });
-    } catch (err) {
-        console.error('❌ Menu delete error:', err);
-        res.status(500).json({ error: 'Помилка видалення' });
-    }
-});
-
-
-
-
-
-// 📣 Роутери для акцій (promotions)
-
-// ➕ Створити акцію
-app.post('/api/promotions', async (req, res) => {
-    const token = req.headers.authorization?.split(' ')[1];
-    if (!token) return res.status(403).json({ error: 'Немає токену' });
-
-    try {
-        const decoded = await admin.auth().verifyIdToken(token);
-        const uid = decoded.uid;
-        const roleDoc = await db.collection('roles').doc(uid).get();
-
-        if (!roleDoc.exists || roleDoc.data().role !== 'manager') {
-            return res.status(403).json({ error: 'Недостатньо прав' });
-        }
+        const role = await this.getUserRole(uid);
+        if (role !== 'manager') return res.status(403).json({ error: 'Недостатньо прав' });
 
         const { title, description, image, startDate, endDate, active } = req.body;
+        if (!title || !description || !image || !startDate || !endDate) {
+            return res.status(400).json({ error: 'Всі поля обов’язкові' });
+        }
 
-        console.log('📥 Отримано тіло запиту на створення акції:', req.body);
+        try {
+            const docRef = await this.db.collection('promotions').add({
+                title,
+                description,
+                image,
+                active: !!active,
+                startDate: admin.firestore.Timestamp.fromDate(new Date(startDate)),
+                endDate: admin.firestore.Timestamp.fromDate(new Date(endDate)),
+                createdAt: admin.firestore.Timestamp.now()
+            });
+            res.status(201).json({ id: docRef.id });
+        } catch (err) {
+            console.error('❌ Error adding promotion:', err);
+            res.status(500).json({ error: 'Не вдалося додати акцію' });
+        }
+    }
+
+    async getAllPromotions(req, res) {
+        const uid = await this.checkToken(req, res);
+        if (!uid) return;
+
+        const role = await this.getUserRole(uid);
+        if (role !== 'manager') return res.status(403).json({ error: 'Недостатньо прав' });
+
+        try {
+            const snapshot = await this.db.collection('promotions').orderBy('startDate', 'desc').get();
+            const promotions = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+            res.json(promotions);
+        } catch (err) {
+            console.error('❌ Error fetching promotions:', err);
+            res.status(500).json({ error: 'Помилка отримання акцій' });
+        }
+    }
+
+    async getActivePromotions(req, res) {
+        try {
+            const now = admin.firestore.Timestamp.now();
+            const snapshot = await this.db.collection('promotions')
+                .where('active', '==', true)
+                .where('startDate', '<=', now)
+                .where('endDate', '>=', now)
+                .orderBy('startDate', 'desc')
+                .get();
+
+            const items = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+            res.json(items);
+        } catch (err) {
+            console.error('❌ Error fetching active promotions:', err);
+            res.status(500).json({ error: 'Помилка отримання акцій' });
+        }
+    }
+
+    async updatePromotion(req, res) {
+        const uid = await this.checkToken(req, res);
+        if (!uid) return;
+
+        const role = await this.getUserRole(uid);
+        if (role !== 'manager') return res.status(403).json({ error: 'Недостатньо прав' });
+
+        const { id } = req.params;
+        const { title, description, image, startDate, endDate, active } = req.body;
 
         if (!title || !description || !image || !startDate || !endDate) {
             return res.status(400).json({ error: 'Всі поля обов’язкові' });
         }
 
-        const docRef = await db.collection('promotions').add({
-            title,
-            description,
-            image,
-            active: !!active,
-            startDate: admin.firestore.Timestamp.fromDate(new Date(startDate)),
-            endDate: admin.firestore.Timestamp.fromDate(new Date(endDate)),
-            createdAt: admin.firestore.Timestamp.now()
-        });
-
-        console.log('✅ Акцію створено з ID:', docRef.id);
-
-        res.status(201).json({ id: docRef.id });
-    } catch (err) {
-        console.error('❌ Error adding promotion:', err);
-        res.status(500).json({ error: 'Не вдалося додати акцію' });
-    }
-});
-
-// 🔐 Отримати всі акції (для менеджера)
-app.get('/api/promotions/all', async (req, res) => {
-    const token = req.headers.authorization?.split(' ')[1];
-    if (!token) return res.status(403).json({ error: 'Немає токену' });
-
-    try {
-        const decoded = await admin.auth().verifyIdToken(token);
-        const uid = decoded.uid;
-        const roleDoc = await db.collection('roles').doc(uid).get();
-
-        if (!roleDoc.exists || roleDoc.data().role !== 'manager') {
-            return res.status(403).json({ error: 'Недостатньо прав' });
+        try {
+            await this.db.collection('promotions').doc(id).update({
+                title,
+                description,
+                image,
+                startDate: admin.firestore.Timestamp.fromDate(new Date(startDate)),
+                endDate: admin.firestore.Timestamp.fromDate(new Date(endDate)),
+                active: !!active
+            });
+            res.json({ message: 'Акцію оновлено' });
+        } catch (err) {
+            console.error('❌ Error updating promotion:', err);
+            res.status(500).json({ error: 'Не вдалося оновити акцію' });
         }
-
-        const snapshot = await db.collection('promotions').orderBy('startDate', 'desc').get();
-        const promotions = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-
-        res.json(promotions);
-    } catch (err) {
-        console.error('❌ Error fetching all promotions:', err);
-        res.status(500).json({ error: 'Помилка отримання акцій' });
     }
-});
 
-// 🔓 Отримати всі активні акції (доступно всім користувачам)
-app.get('/api/promotions', async (req, res) => {
-    try {
-        const now = admin.firestore.Timestamp.now();
-        const snapshot = await db.collection('promotions')
-            .where('active', '==', true)
-            .where('startDate', '<=', now)
-            .where('endDate', '>=', now)
-            .orderBy('startDate', 'desc')
-            .get();
+    async deletePromotion(req, res) {
+        const uid = await this.checkToken(req, res);
+        if (!uid) return;
 
-        const items = snapshot.docs.map(doc => ({
-            id: doc.id,
-            ...doc.data()
-        }));
+        const role = await this.getUserRole(uid);
+        if (role !== 'manager') return res.status(403).json({ error: 'Недостатньо прав' });
 
-        res.json(items);
-    } catch (err) {
-        console.error('❌ Error fetching promotions:', err);
-        res.status(500).json({ error: 'Помилка отримання акцій' });
-    }
-});
-
-// 📝 Оновити акцію
-app.put('/api/promotions/:id', async (req, res) => {
-    const token = req.headers.authorization?.split(' ')[1];
-    if (!token) return res.status(403).json({ error: 'Немає токену' });
-
-    try {
-        const decoded = await admin.auth().verifyIdToken(token);
-        const uid = decoded.uid;
-        const roleDoc = await db.collection('roles').doc(uid).get();
-
-        if (!roleDoc.exists || roleDoc.data().role !== 'manager') {
-            return res.status(403).json({ error: 'Недостатньо прав' });
+        try {
+            const { id } = req.params;
+            await this.db.collection('promotions').doc(id).delete();
+            res.json({ message: 'Акцію видалено' });
+        } catch (err) {
+            console.error('❌ Error deleting promotion:', err);
+            res.status(500).json({ error: 'Не вдалося видалити акцію' });
         }
-
-        const { id } = req.params;
-        const { title, description, image, startDate, endDate, active } = req.body;
-
-        console.log(`✏️ Запит на оновлення акції ${id}:`, req.body);
-
-        if (!title || !description || !image || !startDate || !endDate) {
-            return res.status(400).json({ error: 'Всі поля обов’язкові' });
-        }
-
-        await db.collection('promotions').doc(id).update({
-            title,
-            description,
-            image,
-            startDate: admin.firestore.Timestamp.fromDate(new Date(startDate)),
-            endDate: admin.firestore.Timestamp.fromDate(new Date(endDate)),
-            active: !!active
-        });
-
-        console.log('🆗 Акцію оновлено:', id);
-
-        res.json({ message: 'Акцію оновлено' });
-    } catch (err) {
-        console.error('❌ Error updating promotion:', err);
-        res.status(500).json({ error: 'Не вдалося оновити акцію' });
     }
-});
-
-// 🗑 Видалити акцію (тільки для менеджера)
-app.delete('/api/promotions/:id', async (req, res) => {
-    const token = req.headers.authorization?.split(' ')[1];
-    if (!token) return res.status(403).json({ error: 'Немає токену' });
-
-    try {
-        const decoded = await admin.auth().verifyIdToken(token);
-        const uid = decoded.uid;
-        const roleDoc = await db.collection('roles').doc(uid).get();
-
-        if (!roleDoc.exists || roleDoc.data().role !== 'manager') {
-            return res.status(403).json({ error: 'Недостатньо прав' });
-        }
-
-        const { id } = req.params;
-        await db.collection('promotions').doc(id).delete();
-
-        console.log('🗑 Акцію видалено:', id);
-
-        res.json({ message: 'Акцію видалено' });
-    } catch (err) {
-        console.error('❌ Error deleting promotion:', err);
-        res.status(500).json({ error: 'Не вдалося видалити акцію' });
-    }
-});
+}
 
 
 
-// ➕ Додати відгук
-app.post('/api/reviews', async (req, res) => {
-    const token = req.headers.authorization?.split(' ')[1];
-    if (!token) return res.status(403).json({ error: 'Немає токену' });
 
-    try {
-        const decoded = await admin.auth().verifyIdToken(token);
-        const uid = decoded.uid;
+
+class ReviewController extends BaseController {
+    async addReview(req, res) {
+        const uid = await this.checkToken(req, res);
+        if (!uid) return;
 
         const { comment, ratingMenu, ratingStaff, ratingDelivery } = req.body;
 
@@ -630,338 +461,314 @@ app.post('/api/reviews', async (req, res) => {
             return res.status(400).json({ error: 'Всі оцінки мають бути числами' });
         }
 
-        const userRecord = await admin.auth().getUser(uid);
-        const userName = userRecord.displayName || userRecord.email;
+        try {
+            const userRecord = await this.auth.getUser(uid);
+            const userName = userRecord.displayName || userRecord.email;
 
-        const review = {
-            userId: uid,
-            userName,
-            comment: comment || '',
-            ratingMenu,
-            ratingStaff,
-            ratingDelivery,
-            createdAt: admin.firestore.Timestamp.now()
-        };
+            const review = {
+                userId: uid,
+                userName,
+                comment: comment || '',
+                ratingMenu,
+                ratingStaff,
+                ratingDelivery,
+                createdAt: admin.firestore.Timestamp.now()
+            };
 
-        const docRef = await db.collection('reviews').add(review);
-        res.status(201).json({ id: docRef.id, ...review });
-    } catch (err) {
-        console.error('❌ Error adding review:', err);
-        res.status(500).json({ error: 'Не вдалося додати відгук' });
-    }
-});
-
-
-// 📥 Отримати всі відгуки
-app.get('/api/reviews', async (req, res) => {
-    try {
-        const snapshot = await db.collection('reviews')
-            .orderBy('createdAt', 'desc')
-            .get();
-
-        const reviews = snapshot.docs.map(doc => ({
-            id: doc.id,
-            ...doc.data()
-        }));
-
-        res.json(reviews);
-    } catch (err) {
-        console.error('❌ Error fetching reviews:', err);
-        res.status(500).json({ error: 'Не вдалося отримати відгуки' });
-    }
-});
-
-
-
-
-app.get('/api/user/:uid', async (req, res) => {
-    try {
-        const user = await admin.auth().getUser(req.params.uid);
-        res.json({ name: user.displayName || user.email });
-    } catch (err) {
-        res.status(404).json({ name: 'Анонім' });
-    }
-});
-
-// 📌 Перевірка чи існує користувач у Firebase
-app.get('/api/check-user-exists', async (req, res) => {
-    const token = req.headers.authorization?.split(' ')[1];
-    if (!token) return res.status(403).json({ error: 'No token provided' });
-
-    try {
-        const decoded = await admin.auth().verifyIdToken(token);
-        const uid = decoded.uid;
-
-        const user = await admin.auth().getUser(uid);
-
-        // 👇 ключова перевірка — чи є хоча б 1 email
-        if (!user.email) {
-            return res.status(404).json({ error: 'User not registered' });
+            const docRef = await this.db.collection('reviews').add(review);
+            res.status(201).json({ id: docRef.id, ...review });
+        } catch (err) {
+            console.error('❌ Error adding review:', err);
+            res.status(500).json({ error: 'Не вдалося додати відгук' });
         }
+    }
 
-        // ✅ опціонально перевірити, чи є роль в Firestore
-        const roleDoc = await db.collection('roles').doc(uid).get();
-        if (!roleDoc.exists) {
-            return res.status(404).json({ error: 'User role not found' });
+    async getReviews(req, res) {
+        try {
+            const snapshot = await this.db.collection('reviews')
+                .orderBy('createdAt', 'desc')
+                .get();
+
+            const reviews = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+            res.json(reviews);
+        } catch (err) {
+            console.error('❌ Error fetching reviews:', err);
+            res.status(500).json({ error: 'Не вдалося отримати відгуки' });
         }
-
-        res.json({ exists: true });
-    } catch (error) {
-        console.error('❌ User existence check error:', error);
-        res.status(500).json({ error: 'User not found' });
-    }
-});
-
-
-
-// ✅ Надіслати SMS-код
-app.post('/api/verify/send-otp', async (req, res) => {
-    const { phone } = req.body;
-
-    if (!phone) return res.status(400).json({ error: 'Missing phone number' });
-
-    try {
-        const verification = await client.verify.v2
-            .services(process.env.TWILIO_VERIFY_SERVICE_SID)
-            .verifications.create({ to: phone, channel: 'sms' });
-
-        res.json({ success: true, status: verification.status });
-    } catch (err) {
-        console.error('❌ Send OTP error:', err.message);
-        res.status(500).json({ error: err.message });
-    }
-});
-
-// ✅ Перевірити код підтвердження
-app.post('/api/verify/verify-otp', async (req, res) => {
-    const { phone, code } = req.body;
-
-    if (!phone || !code) return res.status(400).json({ error: 'Missing phone or code' });
-
-    try {
-        const check = await client.verify.v2
-            .services(process.env.TWILIO_VERIFY_SERVICE_SID)
-            .verificationChecks.create({ to: phone, code });
-
-        res.json({ success: check.status === 'approved', status: check.status });
-    } catch (err) {
-        console.error('❌ Verify OTP error:', err.message);
-        res.status(500).json({ error: err.message });
-    }
-});
-
-// 📩 Скидання пароля через Firebase
-app.post('/api/forgot-password', async (req, res) => {
-    const { email } = req.body;
-
-    if (!email) {
-        return res.status(400).json({ error: 'Пошта обов’язкова' });
     }
 
-    try {
-        const resetLink = await admin.auth().generatePasswordResetLink(email, {
-            url: process.env.RESET_REDIRECT_URL || 'https://grinfood-c34ac.web.app/reset-password',
-        });
+    async deleteReview(req, res) {
+        const uid = await this.checkToken(req, res);
+        if (!uid) return;
 
-        const msg = {
-            to: email,
-            from: process.env.SENDGRID_FROM_EMAIL, // приклад: grinfood.support@gmail.com
-            subject: '🔐 Скидання пароля до GrinFood',
-            html: `
-                <p>Вітаємо!</p>
-                <p>Щоб скинути пароль, натисніть кнопку нижче:</p>
-                <a href="${resetLink}" style="background:#4CAF50;color:white;padding:10px 20px;border-radius:6px;text-decoration:none;">
-                    Скинути пароль
-                </a>
-                <p>Якщо ви не запитували скидання — просто ігноруйте цей лист.</p>
-                <br />
-                <small>GrinFood Team</small>
-            `,
-        };
+        const { id } = req.params;
 
-        await sgMail.send(msg);
-        console.log(`📤 Email sent to ${email}`);
-        res.status(200).json({ message: '📩 Лист зі скиданням пароля надіслано' });
-    } catch (error) {
-        console.error('❌ SendGrid Error:', error.message);
-        res.status(500).json({ error: 'Не вдалося надіслати лист' });
+        try {
+            const doc = await this.db.collection('reviews').doc(id).get();
+            if (!doc.exists) {
+                return res.status(404).json({ error: 'Відгук не знайдено' });
+            }
+
+            const review = doc.data();
+            const isOwner = review.userId === uid;
+            const role = await this.getUserRole(uid);
+            const isManager = role === 'manager';
+
+            if (!isOwner && !isManager) {
+                return res.status(403).json({ error: 'Недостатньо прав для видалення відгуку' });
+            }
+
+            await this.db.collection('reviews').doc(id).delete();
+            res.json({ message: 'Відгук видалено' });
+        } catch (err) {
+            console.error('❌ Review delete error:', err);
+            res.status(500).json({ error: 'Не вдалося видалити відгук' });
+        }
     }
-});
+}
 
 
 
 
-// ✅ Публічна перевірка, чи існує акаунт з такою поштою
-app.post('/api/check-user-by-email', async (req, res) => {
-    const { email } = req.body;
 
-    if (!email) {
-        return res.status(400).json({ error: 'Пошта обов’язкова' });
+
+
+class PaymentController extends BaseController {
+    async createPaymentIntent(req, res) {
+        const uid = await this.checkToken(req, res);
+        if (!uid) return;
+
+        const { amount } = req.body;
+        if (!amount) return res.status(400).json({ error: 'Amount is required' });
+
+        try {
+            const paymentIntent = await stripe.paymentIntents.create({
+                amount,
+                currency: 'uah',
+                payment_method_types: ['card'],
+            });
+            res.send({ clientSecret: paymentIntent.client_secret });
+        } catch (err) {
+            console.error('❌ Error creating payment intent:', err.message);
+            res.status(500).json({ error: err.message || 'Failed to create payment intent' });
+        }
     }
-
-    try {
-        await admin.auth().getUserByEmail(email);
-        res.json({ exists: true });
-    } catch (err) {
-        console.error('❌ Email не знайдено:', email);
-        res.status(404).json({ error: 'Користувача не знайдено' });
-    }
-});
+}
 
 
 
-// 📧 Надіслати email при оновленні профілю
-app.post('/api/notify-profile-updated', async (req, res) => {
-    const { email, name } = req.body;
-
-    if (!email || !name) {
-        return res.status(400).json({ error: 'Потрібно вказати email та ім’я' });
-    }
-
-    const msg = {
-        to: email,
-        from: process.env.SENDGRID_FROM_EMAIL, // приклад: grinfood.support@gmail.com
-        subject: '✅ Ваш профіль GrinFood оновлено',
-        html: `
-            <p>Привіт, <strong>${name}</strong>!</p>
-            <p>Ваш профіль був успішно оновлений.</p>
-            <p>Якщо це були не ви — терміново змініть пароль.</p>
-            <br />
-            <small>З повагою, команда GrinFood</small>
-        `
-    };
-
-    try {
-        await sgMail.send(msg);
-        console.log(`📤 Профіль-нотифікація надіслана: ${email}`);
-        res.json({ success: true });
-    } catch (error) {
-        console.error('❌ SendGrid notify error:', error.message);
-        res.status(500).json({ error: 'Не вдалося надіслати повідомлення' });
-    }
-});
 
 
-app.post('/api/send-verification-email', async (req, res) => {
-    const { email, uid } = req.body;
+class VerificationController {
+    async sendOtp(req, res) {
+        const { phone } = req.body;
+        if (!phone) return res.status(400).json({ error: 'Missing phone number' });
 
-    if (!email || !uid) {
-        return res.status(400).json({ error: 'Необхідно вказати email та uid' });
+        try {
+            const verification = await client.verify.v2
+                .services(process.env.TWILIO_VERIFY_SERVICE_SID)
+                .verifications.create({ to: phone, channel: 'sms' });
+            res.json({ success: true, status: verification.status });
+        } catch (err) {
+            console.error('❌ Send OTP error:', err.message);
+            res.status(500).json({ error: err.message });
+        }
     }
 
-    try {
-        const link = await admin.auth().generateEmailVerificationLink(email, {
-            url: `${process.env.APP_BASE_URL}/profile`, // Редірект ПІСЛЯ верифікації
-            handleCodeInApp: false // 🔐 ОБОВ'ЯЗКОВО false
-        });
+    async verifyOtp(req, res) {
+        const { phone, code } = req.body;
+        if (!phone || !code) return res.status(400).json({ error: 'Missing phone or code' });
+
+        try {
+            const check = await client.verify.v2
+                .services(process.env.TWILIO_VERIFY_SERVICE_SID)
+                .verificationChecks.create({ to: phone, code });
+            res.json({ success: check.status === 'approved', status: check.status });
+        } catch (err) {
+            console.error('❌ Verify OTP error:', err.message);
+            res.status(500).json({ error: err.message });
+        }
+    }
+}
+
+
+
+
+
+
+
+class EmailController extends BaseController {
+    async forgotPassword(req, res) {
+        const { email } = req.body;
+        if (!email) return res.status(400).json({ error: 'Пошта обов’язкова' });
+
+        try {
+            const resetLink = await this.auth.generatePasswordResetLink(email, {
+                url: process.env.RESET_REDIRECT_URL || 'https://grinfood-c34ac.web.app/reset-password',
+            });
+
+            const msg = {
+                to: email,
+                from: process.env.SENDGRID_FROM_EMAIL,
+                subject: '🔐 Скидання пароля до GrinFood',
+                html: `Натисніть, щоб скинути пароль: <a href="${resetLink}">Скинути</a>`
+            };
+            await sgMail.send(msg);
+            res.status(200).json({ message: '📩 Лист зі скиданням пароля надіслано' });
+        } catch (error) {
+            console.error('❌ SendGrid Error:', error.message);
+            res.status(500).json({ error: 'Не вдалося надіслати лист' });
+        }
+    }
+
+    async sendVerificationEmail(req, res) {
+        const { email, uid } = req.body;
+        if (!email || !uid) return res.status(400).json({ error: 'Необхідно вказати email та uid' });
+
+        try {
+            const link = await this.auth.generateEmailVerificationLink(email, {
+                url: `${process.env.APP_BASE_URL}/profile`,
+                handleCodeInApp: false
+            });
+
+            const msg = {
+                to: email,
+                from: process.env.SENDGRID_FROM_EMAIL,
+                subject: '🔐 Підтвердження пошти GrinFood',
+                html: `Підтвердити пошту: <a href="${link}">Натисни тут</a>`
+            };
+            await sgMail.send(msg);
+            res.json({ success: true });
+        } catch (error) {
+            console.error('❌ Error sending verification email:', error);
+            res.status(500).json({ error: 'Не вдалося надіслати лист' });
+        }
+    }
+
+    async notifyProfileUpdated(req, res) {
+        const { email, name } = req.body;
+        if (!email || !name) return res.status(400).json({ error: 'email і name обов’язкові' });
 
         const msg = {
             to: email,
             from: process.env.SENDGRID_FROM_EMAIL,
-            subject: '🔐 Підтвердження пошти GrinFood',
-            html: `
-                <p>Привіт!</p>
-                <p>Щоб підтвердити вашу пошту, натисніть кнопку нижче:</p>
-                <a href="${link}" style="background:#4CAF50;color:white;padding:10px 20px;border-radius:6px;text-decoration:none;">
-                    Підтвердити пошту
-                </a>
-                <p>Якщо це були не ви — проігноруйте це повідомлення.</p>
-            `
+            subject: '✅ Ваш профіль GrinFood оновлено',
+            html: `<p>Привіт, <strong>${name}</strong>! Ваш профіль оновлено.</p>`
         };
 
-        console.log('📤 Надсилання листа:', msg);
-
-        await sgMail.send(msg);
-        res.json({ success: true });
-
-    } catch (error) {
-        console.error('❌ Error sending verification email:', error);
-        res.status(500).json({ error: 'Не вдалося надіслати лист' });
-    }
-});
-
-
-
-
-// Перевірити статус підтвердження email
-app.get('/api/check-email-verified/:uid', async (req, res) => {
-    try {
-        const user = await admin.auth().getUser(req.params.uid);
-        res.json({
-            email: user.email,
-            emailVerified: user.emailVerified
-        });
-    } catch (error) {
-        console.error('❌ Email verify check error:', error);
-        res.status(500).json({ error: error.message });
-    }
-});
-
-
-app.post('/api/delete-user', async (req, res) => {
-    const token = req.headers.authorization?.split(' ')[1];
-    if (!token) return res.status(403).json({ error: 'Немає токену' });
-
-    try {
-        const decoded = await admin.auth().verifyIdToken(token);
-        const uid = decoded.uid;
-
-        // 🔥 Видаляємо з Firebase Auth
-        await admin.auth().deleteUser(uid);
-        console.log(`🗑 Користувач ${uid} видалений з Firebase`);
-
-        // 🧹 Видаляємо додаткові дані з Firestore
-        await db.collection('roles').doc(uid).delete().catch(() => {});
-        await db.collection('orders').where('userId', '==', uid).get().then(snapshot => {
-            snapshot.forEach(doc => doc.ref.delete());
-        });
-
-        await db.collection('reviews').where('userId', '==', uid).get().then(snapshot => {
-            snapshot.forEach(doc => doc.ref.delete());
-        });
-
-        res.json({ message: 'Користувача повністю видалено' });
-    } catch (error) {
-        console.error('❌ Error deleting user:', error);
-        res.status(500).json({ error: error.message || 'Помилка при видаленні користувача' });
-    }
-});
-
-
-
-app.delete('/api/reviews/:id', async (req, res) => {
-    const token = req.headers.authorization?.split(' ')[1];
-    const { id } = req.params;
-
-    if (!token) return res.status(403).json({ error: 'Немає токену' });
-
-    try {
-        const decoded = await admin.auth().verifyIdToken(token);
-        const uid = decoded.uid;
-
-        const doc = await db.collection('reviews').doc(id).get();
-        if (!doc.exists) {
-            return res.status(404).json({ error: 'Відгук не знайдено' });
+        try {
+            await sgMail.send(msg);
+            res.json({ success: true });
+        } catch (error) {
+            console.error('❌ Notify error:', error.message);
+            res.status(500).json({ error: 'Не вдалося надіслати повідомлення' });
         }
-
-        const review = doc.data();
-        const isOwner = review.userId === uid;
-
-        // 🔐 Перевірка ролі (для менеджера)
-        const roleDoc = await db.collection('roles').doc(uid).get();
-        const isManager = roleDoc.exists && roleDoc.data().role === 'manager';
-
-        if (!isOwner && !isManager) {
-            return res.status(403).json({ error: 'Недостатньо прав для видалення відгуку' });
-        }
-
-        await db.collection('reviews').doc(id).delete();
-        res.json({ message: 'Відгук видалено' });
-    } catch (err) {
-        console.error('❌ Review delete error:', err);
-        res.status(500).json({ error: 'Не вдалося видалити відгук' });
     }
-});
+
+    async checkEmailVerified(req, res) {
+        try {
+            const user = await this.auth.getUser(req.params.uid);
+            res.json({ email: user.email, emailVerified: user.emailVerified });
+        } catch (error) {
+            console.error('❌ Email verify check error:', error);
+            res.status(500).json({ error: error.message });
+        }
+    }
+
+    async checkUserExists(req, res) {
+        const uid = await this.checkToken(req, res);
+        if (!uid) return;
+
+        try {
+            const user = await this.auth.getUser(uid);
+            if (!user.email) return res.status(404).json({ error: 'User not registered' });
+
+            const roleDoc = await this.db.collection('roles').doc(uid).get();
+            if (!roleDoc.exists) return res.status(404).json({ error: 'User role not found' });
+
+            res.json({ exists: true });
+        } catch (error) {
+            console.error('❌ User existence check error:', error);
+            res.status(500).json({ error: 'User not found' });
+        }
+    }
+
+    async checkUserByEmail(req, res) {
+        const { email } = req.body;
+        if (!email) return res.status(400).json({ error: 'Пошта обов’язкова' });
+
+        try {
+            await this.auth.getUserByEmail(email);
+            res.json({ exists: true });
+        } catch (err) {
+            res.status(404).json({ error: 'Користувача не знайдено' });
+        }
+    }
+
+    async getUserName(req, res) {
+        try {
+            const user = await this.auth.getUser(req.params.uid);
+            res.json({ name: user.displayName || user.email });
+        } catch (err) {
+            res.status(404).json({ name: 'Анонім' });
+        }
+    }
+}
+
+
+
+
+
+
+
+
+// Ініціалізація сервісів і контролерів
+const firebaseService = new FirebaseService(admin);
+const statsController = new StatsController(firebaseService);
+const menuController = new MenuController(firebaseService);
+const orderController = new OrderController(firebaseService);
+const authController = new AuthController(firebaseService);
+const promotionController = new PromotionController(firebaseService);
+const reviewController = new ReviewController(firebaseService);
+const paymentController = new PaymentController(firebaseService);
+const verificationController = new VerificationController();
+const emailController = new EmailController(firebaseService);
+
+
+// 📌 Роутинг (тільки частина прикладна)
+app.get('/', (req, res) => res.send('Grinfood API is working ✅'));
+app.get('/api/stats/popular-products', (req, res) => statsController.getPopularProducts(req, res));
+app.get('/api/menu', (req, res) => menuController.getMenuItems(req, res));
+app.post('/api/menu', (req, res) => menuController.addMenuItem(req, res));
+app.put('/api/menu/:id', (req, res) => menuController.updateMenuItem(req, res));
+app.delete('/api/menu/:id', (req, res) => menuController.deleteMenuItem(req, res));
+app.post('/api/orders', (req, res) => orderController.createOrder(req, res));
+app.get('/api/orders/by-status/:status', (req, res) => orderController.getOrdersByStatus(req, res));
+app.patch('/api/orders/:id/status', (req, res) => orderController.updateOrderStatus(req, res));
+app.post('/api/signup', (req, res) => authController.signup(req, res));
+app.post('/api/signin', (req, res) => authController.signin(req, res));
+app.get('/api/check-auth', (req, res) => authController.checkAuth(req, res));
+app.get('/api/get-role', (req, res) => authController.getRole(req, res));
+app.post('/api/update-email', (req, res) => authController.updateEmail(req, res));
+app.post('/api/delete-user', (req, res) => authController.deleteUser(req, res));
+app.post('/api/promotions', (req, res) => promotionController.createPromotion(req, res));
+app.get('/api/promotions/all', (req, res) => promotionController.getAllPromotions(req, res));
+app.get('/api/promotions', (req, res) => promotionController.getActivePromotions(req, res));
+app.put('/api/promotions/:id', (req, res) => promotionController.updatePromotion(req, res));
+app.delete('/api/promotions/:id', (req, res) => promotionController.deletePromotion(req, res));
+app.post('/api/reviews', (req, res) => reviewController.addReview(req, res));
+app.get('/api/reviews', (req, res) => reviewController.getReviews(req, res));
+app.delete('/api/reviews/:id', (req, res) => reviewController.deleteReview(req, res));
+app.post('/api/create-payment-intent', (req, res) => paymentController.createPaymentIntent(req, res));
+app.post('/api/verify/send-otp', (req, res) => verificationController.sendOtp(req, res));
+app.post('/api/verify/verify-otp', (req, res) => verificationController.verifyOtp(req, res));
+app.post('/api/forgot-password', (req, res) => emailController.forgotPassword(req, res));
+app.post('/api/send-verification-email', (req, res) => emailController.sendVerificationEmail(req, res));
+app.post('/api/notify-profile-updated', (req, res) => emailController.notifyProfileUpdated(req, res));
+app.get('/api/check-email-verified/:uid', (req, res) => emailController.checkEmailVerified(req, res));
+app.get('/api/check-user-exists', (req, res) => emailController.checkUserExists(req, res));
+app.post('/api/check-user-by-email', (req, res) => emailController.checkUserByEmail(req, res));
+app.get('/api/user/:uid', (req, res) => emailController.getUserName(req, res));
 
 
 
@@ -969,9 +776,4 @@ app.delete('/api/reviews/:id', async (req, res) => {
 // ✅ Запуск сервера
 app.listen(PORT, () => {
     console.log(`✅ Server is running at http://localhost:${PORT}`);
-
-    // ✅ Лог для перевірки .env (тимчасово)
-    console.log('🛠 TWILIO_VERIFY_SERVICE_SID:', process.env.TWILIO_VERIFY_SERVICE_SID || '❌ missing');
-    console.log('🛠 TWILIO_ACCOUNT_SID:', process.env.TWILIO_ACCOUNT_SID ? '[OK]' : '❌ missing');
-    console.log('🛠 TWILIO_AUTH_TOKEN:', process.env.TWILIO_AUTH_TOKEN ? '[OK]' : '❌ missing');
 });
