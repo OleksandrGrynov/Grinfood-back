@@ -344,14 +344,32 @@ class OrderController extends BaseController {
 
         try {
             const snapshot = await this.db.collection('orders').where('status', '==', status).get();
-            let orders = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+
+            const orders = snapshot.docs.map(doc => {
+                const data = doc.data();
+
+                // 🔍 Лог для перевірки, чи є createdAt і його тип
+                if (!data.createdAt || !data.createdAt.toMillis) {
+                    console.warn(`⚠️ Order ${doc.id} has no valid createdAt`);
+                }
+
+                return {
+                    id: doc.id,
+                    ...data,
+                    createdAt: data.createdAt?.toMillis ? data.createdAt : null, // normalize or null
+                };
+            });
+
+            // ⏱️ Сортування за датою, якщо є
             orders.sort((a, b) => (b.createdAt?.toMillis?.() || 0) - (a.createdAt?.toMillis?.() || 0));
+
             res.json(orders);
         } catch (err) {
             console.error('❌ Order fetch error:', err);
             res.status(500).json({ error: 'Помилка отримання замовлень' });
         }
     }
+
 
     async updateOrderStatus(req, res) {
         const uid = await this.checkToken(req, res);
