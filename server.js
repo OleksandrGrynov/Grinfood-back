@@ -4,11 +4,10 @@ require('dotenv').config();
 const admin = require('firebase-admin');
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_JSON);
-
+const statsController = new StatsController(firebaseService);
 const twilio = require('twilio');
 const client = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
 const router = express.Router();
-const { OpenAI } = require('openai');
 const app = express();
 const PORT = process.env.PORT || 5000;
 const sgMail = require('@sendgrid/mail');
@@ -23,7 +22,7 @@ admin.initializeApp({
     credential: admin.credential.cert(serviceAccount)
 });
 const db = admin.firestore();
-
+app.get('/stats/popular-products', (req, res) => statsController.getPopularProducts(req, res));
 // 🏠 Головна
 app.get('/', (req, res) => {
     res.send('Grinfood API is working ✅');
@@ -893,6 +892,53 @@ app.delete('/api/reviews/:id', async (req, res) => {
         res.status(500).json({ error: 'Не вдалося видалити відгук' });
     }
 });
+
+class StatsController {
+    constructor(firebaseService) {
+        this.db = firebaseService.getDb();
+        this.auth = firebaseService.getAuth();
+    }
+
+    async getPopularProducts(req, res) {
+        const token = req.headers.authorization?.split(' ')[1];
+        if (!token) return res.status(403).json({ error: 'Немає токену' });
+
+        try {
+            const decoded = await this.auth.verifyIdToken(token);
+            const uid = decoded.uid;
+
+            const roleDoc = await this.db.collection('roles').doc(uid).get();
+            if (!roleDoc.exists || roleDoc.data().role !== 'manager') {
+                return res.status(403).json({ error: 'Недостатньо прав' });
+            }
+
+            const snapshot = await this.db.collection('orders').get();
+
+            const productCount = {};
+            snapshot.forEach(doc => {
+                const items = doc.data().items || [];
+                items.forEach(item => {
+                    const name = item.name;
+                    if (!productCount[name]) {
+                        productCount[name] = 0;
+                    }
+                    productCount[name] += item.quantity || 1;
+                });
+            });
+
+            const result = Object.entries(productCount)
+                .map(([name, count]) => ({ name, count }))
+                .sort((a, b) => b.count - a.count);
+
+            res.json(result);
+        } catch (err) {
+            console.error('❌ Error fetching stats:', err);
+            res.status(500).json({ error: 'Не вдалося отримати статистику' });
+        }
+    }
+}
+
+module.exports = StatsController;
 
 
 // ✅ Запуск сервера
