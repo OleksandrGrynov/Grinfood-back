@@ -87,6 +87,42 @@ class StatsController extends BaseController {
             res.status(500).json({ error: 'Не вдалося отримати статистику' });
         }
     }
+    async getRevenueInPeriod(req, res) {
+        const uid = await this.checkToken(req, res);
+        if (!uid) return;
+
+        const role = await this.getUserRole(uid);
+        if (role !== 'manager') return res.status(403).json({ error: 'Недостатньо прав' });
+
+        const { startDate, endDate } = req.query;
+
+        if (!startDate || !endDate) {
+            return res.status(400).json({ error: 'Потрібні startDate та endDate у форматі YYYY-MM-DD' });
+        }
+
+        try {
+            const start = admin.firestore.Timestamp.fromDate(new Date(startDate));
+            const end = admin.firestore.Timestamp.fromDate(new Date(endDate));
+
+            const snapshot = await this.db.collection('orders')
+                .where('createdAt', '>=', start)
+                .where('createdAt', '<=', end)
+                .where('status', '==', 'confirmed')
+                .get();
+
+            let totalRevenue = 0;
+            snapshot.forEach(doc => {
+                const data = doc.data();
+                totalRevenue += data.total || 0;
+            });
+
+            res.json({ revenue: totalRevenue });
+        } catch (err) {
+            console.error('❌ Revenue fetch error:', err);
+            res.status(500).json({ error: 'Не вдалося отримати виручку' });
+        }
+    }
+
 }
 
 class MenuController extends BaseController {
@@ -769,6 +805,7 @@ app.get('/api/check-email-verified/:uid', (req, res) => emailController.checkEma
 app.get('/api/check-user-exists', (req, res) => emailController.checkUserExists(req, res));
 app.post('/api/check-user-by-email', (req, res) => emailController.checkUserByEmail(req, res));
 app.get('/api/user/:uid', (req, res) => emailController.getUserName(req, res));
+app.get('/api/stats/revenue', (req, res) => statsController.getRevenueInPeriod(req, res));
 
 
 
