@@ -42,6 +42,13 @@ const emailService = new EmailService();
 const app = express();
 const PORT = process.env.PORT || 5000;
 
+
+app.use(cors({
+    origin: ['https://grinfood-c34ac.web.app'], // або '*', якщо для всіх
+    methods: ['GET', 'POST', 'PUT', 'DELETE'],
+    credentials: true
+}));
+
 // 🧩 Middleware
 app.use(cors());
 app.use(express.json());
