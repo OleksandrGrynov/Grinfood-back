@@ -332,6 +332,98 @@ class OrderController extends BaseController {
             res.status(500).json({ error: error.message || 'Failed to create order' });
         }
     }
+// ➕ Прийняти замовлення
+    async assignOrderToCourier(req, res) {
+        const uid = await this.checkToken(req, res);
+        if (!uid) return;
+
+        const role = await this.getUserRole(uid);
+        if (role !== 'courier') return res.status(403).json({ error: 'Недостатньо прав' });
+
+        const { id } = req.params;
+
+        try {
+            await this.db.collection('orders').doc(id).update({ courierId: uid });
+            res.json({ message: 'Замовлення призначене курʼєру' });
+        } catch (err) {
+            console.error('❌ Assign order error:', err);
+            res.status(500).json({ error: 'Не вдалося призначити замовлення' });
+        }
+    }
+
+// 📥 Отримати вільні замовлення
+    async getAvailableOrders(req, res) {
+        const uid = await this.checkToken(req, res);
+        if (!uid) return;
+
+        const role = await this.getUserRole(uid);
+        if (role !== 'courier') return res.status(403).json({ error: 'Недостатньо прав' });
+
+        try {
+            const snapshot = await this.db.collection('orders')
+                .where('status', '==', 'confirmed')
+                .where('courierId', '==', null)
+                .get();
+
+            const orders = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+            res.json(orders);
+        } catch (err) {
+            console.error('❌ Fetch available orders error:', err);
+            res.status(500).json({ error: 'Не вдалося отримати доступні замовлення' });
+        }
+    }
+
+// 📦 Отримати замовлення курʼєра
+    async getCourierOrders(req, res) {
+        const uid = await this.checkToken(req, res);
+        if (!uid) return;
+
+        const role = await this.getUserRole(uid);
+        if (role !== 'courier') return res.status(403).json({ error: 'Недостатньо прав' });
+
+        try {
+            const snapshot = await this.db.collection('orders')
+                .where('courierId', '==', uid)
+                .get();
+
+            const orders = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+            res.json(orders);
+        } catch (err) {
+            console.error('❌ Fetch courier orders error:', err);
+            res.status(500).json({ error: 'Не вдалося отримати ваші замовлення' });
+        }
+    }
+// ✅ Завершити доставку
+    async markOrderAsDelivered(req, res) {
+        const uid = await this.checkToken(req, res);
+        if (!uid) return;
+
+        const role = await this.getUserRole(uid);
+        if (role !== 'courier') return res.status(403).json({ error: 'Недостатньо прав' });
+
+        const { id } = req.params;
+
+        try {
+            const docRef = this.db.collection('orders').doc(id);
+            const doc = await docRef.get();
+
+            if (!doc.exists) {
+                return res.status(404).json({ error: 'Замовлення не знайдено' });
+            }
+
+            const order = doc.data();
+            if (order.courierId !== uid) {
+                return res.status(403).json({ error: 'Це не ваше замовлення' });
+            }
+
+            await docRef.update({ status: 'delivered', deliveredAt: admin.firestore.Timestamp.now() });
+
+            res.json({ message: 'Замовлення позначене як доставлене' });
+        } catch (err) {
+            console.error('❌ Mark delivered error:', err);
+            res.status(500).json({ error: 'Не вдалося завершити замовлення' });
+        }
+    }
 
     async getOrdersByStatus(req, res) {
         const uid = await this.checkToken(req, res);
@@ -937,6 +1029,10 @@ app.get('/api/user/:uid', (req, res) => emailController.getUserName(req, res));
 app.get('/api/stats/revenue', (req, res) => statsController.getRevenueInPeriod(req, res));
 app.get('/api/stats/demand', (req, res) => statsController.getProductDemandInPeriod(req, res));
 app.get('/api/stats/revenue-daily', (req, res) => statsController.getDailyRevenue(req, res));
+app.patch('/api/courier/orders/:id/deliver', (req, res) => orderController.markOrderAsDelivered(req, res));
+app.get('/api/courier/available-orders', (req, res) => orderController.getAvailableOrders(req, res));
+app.patch('/api/courier/orders/:id/assign', (req, res) => orderController.assignOrderToCourier(req, res));
+app.get('/api/courier/my-orders', (req, res) => orderController.getCourierOrders(req, res));
 
 
 
