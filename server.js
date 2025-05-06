@@ -85,6 +85,7 @@ class StatsController {
 
 const firebaseService = new FirebaseService(admin);
 const statsController = new StatsController(firebaseService);
+const db = firebaseService.getDb(); // 🛠 обов’язково!
 
 // 👇 Mounting route
 app.get('/api/stats/popular-products', (req, res) => statsController.getPopularProducts(req, res));
@@ -98,7 +99,8 @@ app.get('/', (req, res) => {
 // 🍔 Отримати всі позиції меню
 app.get('/api/menu', async (req, res) => {
     try {
-        const snapshot = await firebaseService.getDb().collection('menuItems').get();
+        const snapshot = await db.collection('menuItems').get();
+
 
         const items = snapshot.docs.map(doc => ({
             id: doc.id,
