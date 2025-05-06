@@ -324,6 +324,8 @@ class OrderController extends BaseController {
                 userId: uid,
                 createdAt: admin.firestore.Timestamp.now(),
                 status: 'pending',
+                courierId: null,
+
             };
             const docRef = await this.db.collection('orders').add(order);
             res.status(201).json({ id: docRef.id, ...order });
