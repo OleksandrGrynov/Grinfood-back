@@ -101,8 +101,9 @@ class StatsController extends BaseController {
         }
 
         try {
-            const start = admin.firestore.Timestamp.fromDate(new Date(startDate));
-            const end = admin.firestore.Timestamp.fromDate(new Date(endDate));
+            // ✅ Примусово встановлюємо час в UTC для точного фільтрування
+            const start = admin.firestore.Timestamp.fromDate(new Date(`${startDate}T00:00:00Z`));
+            const end = admin.firestore.Timestamp.fromDate(new Date(`${endDate}T23:59:59Z`));
 
             const snapshot = await this.db.collection('orders')
                 .where('createdAt', '>=', start)
@@ -122,6 +123,7 @@ class StatsController extends BaseController {
             res.status(500).json({ error: 'Не вдалося отримати виручку' });
         }
     }
+
 
 }
 
