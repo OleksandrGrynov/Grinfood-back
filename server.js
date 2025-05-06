@@ -828,6 +828,73 @@ app.get('/api/check-email-verified/:uid', async (req, res) => {
     }
 });
 
+
+app.post('/api/delete-user', async (req, res) => {
+    const token = req.headers.authorization?.split(' ')[1];
+    if (!token) return res.status(403).json({ error: 'Немає токену' });
+
+    try {
+        const decoded = await admin.auth().verifyIdToken(token);
+        const uid = decoded.uid;
+
+        // 🔥 Видаляємо з Firebase Auth
+        await admin.auth().deleteUser(uid);
+        console.log(`🗑 Користувач ${uid} видалений з Firebase`);
+
+        // 🧹 Видаляємо додаткові дані з Firestore
+        await db.collection('roles').doc(uid).delete().catch(() => {});
+        await db.collection('orders').where('userId', '==', uid).get().then(snapshot => {
+            snapshot.forEach(doc => doc.ref.delete());
+        });
+
+        await db.collection('reviews').where('userId', '==', uid).get().then(snapshot => {
+            snapshot.forEach(doc => doc.ref.delete());
+        });
+
+        res.json({ message: 'Користувача повністю видалено' });
+    } catch (error) {
+        console.error('❌ Error deleting user:', error);
+        res.status(500).json({ error: error.message || 'Помилка при видаленні користувача' });
+    }
+});
+
+
+
+app.delete('/api/reviews/:id', async (req, res) => {
+    const token = req.headers.authorization?.split(' ')[1];
+    const { id } = req.params;
+
+    if (!token) return res.status(403).json({ error: 'Немає токену' });
+
+    try {
+        const decoded = await admin.auth().verifyIdToken(token);
+        const uid = decoded.uid;
+
+        const doc = await db.collection('reviews').doc(id).get();
+        if (!doc.exists) {
+            return res.status(404).json({ error: 'Відгук не знайдено' });
+        }
+
+        const review = doc.data();
+        const isOwner = review.userId === uid;
+
+        // 🔐 Перевірка ролі (для менеджера)
+        const roleDoc = await db.collection('roles').doc(uid).get();
+        const isManager = roleDoc.exists && roleDoc.data().role === 'manager';
+
+        if (!isOwner && !isManager) {
+            return res.status(403).json({ error: 'Недостатньо прав для видалення відгуку' });
+        }
+
+        await db.collection('reviews').doc(id).delete();
+        res.json({ message: 'Відгук видалено' });
+    } catch (err) {
+        console.error('❌ Review delete error:', err);
+        res.status(500).json({ error: 'Не вдалося видалити відгук' });
+    }
+});
+
+
 // ✅ Запуск сервера
 app.listen(PORT, () => {
     console.log(`✅ Server is running at http://localhost:${PORT}`);
