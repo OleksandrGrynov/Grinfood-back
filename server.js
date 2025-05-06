@@ -356,7 +356,8 @@ class OrderController extends BaseController {
                 return {
                     id: doc.id,
                     ...data,
-                    createdAt: data.createdAt?.toMillis ? data.createdAt : null, // normalize or null
+                    createdAt: data.createdAt?.toDate ? data.createdAt.toDate() : null
+
                 };
             });
 
