@@ -103,6 +103,7 @@ class StatsController extends BaseController {
             res.status(500).json({ error: 'Не вдалося отримати статистику' });
         }
     }
+
     async getRevenueInPeriod(req, res) {
         const uid = await this.checkToken(req, res);
         if (!uid) return;
@@ -117,7 +118,6 @@ class StatsController extends BaseController {
         }
 
         try {
-            // ✅ Примусово встановлюємо час в UTC для точного фільтрування
             const start = admin.firestore.Timestamp.fromDate(new Date(`${startDate}T00:00:00Z`));
             const end = admin.firestore.Timestamp.fromDate(new Date(`${endDate}T23:59:59Z`));
 
@@ -140,8 +140,53 @@ class StatsController extends BaseController {
         }
     }
 
+    async getProductDemandInPeriod(req, res) {
+        const uid = await this.checkToken(req, res);
+        if (!uid) return;
 
+        const role = await this.getUserRole(uid);
+        if (role !== 'manager') return res.status(403).json({ error: 'Недостатньо прав' });
+
+        const { startDate, endDate } = req.query;
+        if (!startDate || !endDate) {
+            return res.status(400).json({ error: 'Потрібні startDate та endDate у форматі YYYY-MM-DD' });
+        }
+
+        try {
+            const start = admin.firestore.Timestamp.fromDate(new Date(`${startDate}T00:00:00Z`));
+            const end = admin.firestore.Timestamp.fromDate(new Date(`${endDate}T23:59:59Z`));
+
+            const snapshot = await this.db.collection('orders')
+                .where('createdAt', '>=', start)
+                .where('createdAt', '<=', end)
+                .where('status', '==', 'confirmed')
+                .get();
+
+            const productCount = {};
+            snapshot.forEach(doc => {
+                const items = doc.data().items || [];
+                items.forEach(item => {
+                    const name = item.name;
+                    productCount[name] = (productCount[name] || 0) + (item.quantity || 1);
+                });
+            });
+
+            const sorted = Object.entries(productCount)
+                .map(([name, count]) => ({ name, count }))
+                .sort((a, b) => b.count - a.count);
+
+            res.json({
+                most: sorted.slice(-5).reverse(), // ТОП-5
+                least: sorted.slice(0, 5)         // Найменш популярні
+            });
+
+        } catch (err) {
+            console.error('❌ Demand fetch error:', err);
+            res.status(500).json({ error: 'Не вдалося отримати попит товарів' });
+        }
+    }
 }
+
 
 class MenuController extends BaseController {
     async getMenuItems(req, res) {
@@ -824,6 +869,7 @@ app.get('/api/check-user-exists', (req, res) => emailController.checkUserExists(
 app.post('/api/check-user-by-email', (req, res) => emailController.checkUserByEmail(req, res));
 app.get('/api/user/:uid', (req, res) => emailController.getUserName(req, res));
 app.get('/api/stats/revenue', (req, res) => statsController.getRevenueInPeriod(req, res));
+app.get('/api/stats/demand', (req, res) => statsController.getProductDemandInPeriod(req, res));
 
 
 
