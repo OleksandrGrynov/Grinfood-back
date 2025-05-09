@@ -314,7 +314,8 @@ class OrderController extends BaseController {
                 return {
                     id: doc.id,
                     ...data,
-                    createdAt: data.createdAt?.toDate?.() || null
+                    createdAt: data.createdAt && data.createdAt.toDate ? data.createdAt.toDate() : null
+
                 };
             });
 
