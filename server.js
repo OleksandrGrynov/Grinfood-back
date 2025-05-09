@@ -21,7 +21,7 @@ sgMail.setApiKey(process.env.SENDGRID_API_KEY);
 app.use(cors());
 app.use(express.json());
 
-// 📦 FirebaseService
+
 class FirebaseService {
     constructor(adminInstance) {
         this.db = adminInstance.firestore();
@@ -34,8 +34,6 @@ class FirebaseService {
         return this.auth;
     }
 }
-
-// 🧠 Controllers
 
 class BaseController {
     constructor(firebaseService) {
@@ -234,7 +232,6 @@ class StatsController extends BaseController {
     }
 }
 
-
 class MenuController extends BaseController {
     async getMenuItems(req, res) {
         try {
@@ -301,10 +298,33 @@ class MenuController extends BaseController {
     }
 }
 
-
-
-
 class OrderController extends BaseController {
+    async getUserOrders(req, res) {
+        const uid = await this.checkToken(req, res);
+        if (!uid) return;
+
+        try {
+            const snapshot = await this.db.collection('orders')
+                .where('userId', '==', uid)
+                .orderBy('createdAt', 'desc')
+                .get();
+
+            const orders = snapshot.docs.map(doc => {
+                const data = doc.data();
+                return {
+                    id: doc.id,
+                    ...data,
+                    createdAt: data.createdAt?.toDate?.() || null
+                };
+            });
+
+            res.json(orders);
+        } catch (err) {
+            console.error('❌ Fetch user orders error:', err);
+            res.status(500).json({ error: 'Не вдалося отримати замовлення користувача' });
+        }
+    }
+
     async createOrder(req, res) {
         const uid = await this.checkToken(req, res);
         if (!uid) return;
@@ -498,12 +518,6 @@ class OrderController extends BaseController {
     }
 }
 
-
-
-
-
-
-
 class AuthController extends BaseController {
     async signup(req, res) {
         const { name, email, password, role = 'user' } = req.body;
@@ -593,9 +607,6 @@ class AuthController extends BaseController {
         }
     }
 }
-
-
-
 
 class PromotionController extends BaseController {
     async createPromotion(req, res) {
@@ -710,10 +721,6 @@ class PromotionController extends BaseController {
     }
 }
 
-
-
-
-
 class ReviewController extends BaseController {
     async addReview(req, res) {
         const uid = await this.checkToken(req, res);
@@ -795,12 +802,6 @@ class ReviewController extends BaseController {
     }
 }
 
-
-
-
-
-
-
 class PaymentController extends BaseController {
     async createPaymentIntent(req, res) {
         const uid = await this.checkToken(req, res);
@@ -822,10 +823,6 @@ class PaymentController extends BaseController {
         }
     }
 }
-
-
-
-
 
 class VerificationController {
     async sendOtp(req, res) {
@@ -858,12 +855,6 @@ class VerificationController {
         }
     }
 }
-
-
-
-
-
-
 
 class EmailController extends BaseController {
     async forgotPassword(req, res) {
@@ -989,7 +980,6 @@ class EmailController extends BaseController {
 
 
 
-
 // Ініціалізація сервісів і контролерів
 const firebaseService = new FirebaseService(admin);
 const statsController = new StatsController(firebaseService);
@@ -1044,6 +1034,7 @@ app.patch('/api/courier/orders/:id/deliver', (req, res) => orderController.markO
 app.get('/api/courier/available-orders', (req, res) => orderController.getAvailableOrders(req, res));
 app.patch('/api/courier/orders/:id/assign', (req, res) => orderController.assignOrderToCourier(req, res));
 app.get('/api/courier/my-orders', (req, res) => orderController.getCourierOrders(req, res));
+app.get('/api/my-orders', (req, res) => orderController.getUserOrders(req, res));
 
 
 
